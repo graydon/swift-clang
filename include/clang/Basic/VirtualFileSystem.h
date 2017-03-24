@@ -46,20 +46,31 @@ namespace vfs {
 
 /// \brief The result of a \p status operation.
 class Status {
+
+  // Every Status has at least a Name and Type.
   std::string Name;
-  llvm::sys::fs::UniqueID UID;
-  llvm::sys::TimePoint<> MTime;
-  uint32_t User;
-  uint32_t Group;
-  uint64_t Size;
   llvm::sys::fs::file_type Type;
-  llvm::sys::fs::perms Perms;
+
+  // Remaining status-info is lazily filled in when requested.
+  mutable llvm::sys::fs::UniqueID UID;
+  mutable llvm::sys::TimePoint<> MTime;
+  mutable uint32_t User;
+  mutable uint32_t Group;
+  mutable uint64_t Size;
+  mutable llvm::sys::fs::perms Perms;
+
+  // True iff the lazy fields aren't yet filled in.
+  mutable bool Incomplete;
+
+  // Fill the lazy fields in, if necessary.
+  void ensureComplete() const;
 
 public:
   bool IsVFSMapped; // FIXME: remove when files support multiple names
 
 public:
-  Status() : Type(llvm::sys::fs::file_type::status_error) {}
+  Status() : Type(llvm::sys::fs::file_type::status_error), Incomplete(true) {}
+  Status(StringRef Name, llvm::sys::fs::file_type Type);
   Status(const llvm::sys::fs::file_status &Status);
   Status(StringRef Name, llvm::sys::fs::UniqueID UID,
          llvm::sys::TimePoint<> MTime, uint32_t User, uint32_t Group,
@@ -77,12 +88,18 @@ public:
   /// @name Status interface from llvm::sys::fs
   /// @{
   llvm::sys::fs::file_type getType() const { return Type; }
-  llvm::sys::fs::perms getPermissions() const { return Perms; }
-  llvm::sys::TimePoint<> getLastModificationTime() const { return MTime; }
-  llvm::sys::fs::UniqueID getUniqueID() const { return UID; }
-  uint32_t getUser() const { return User; }
-  uint32_t getGroup() const { return Group; }
-  uint64_t getSize() const { return Size; }
+  llvm::sys::fs::perms getPermissions() const {
+    ensureComplete();
+    return Perms;
+  }
+  llvm::sys::TimePoint<> getLastModificationTime() const {
+    ensureComplete();
+    return MTime;
+  }
+  llvm::sys::fs::UniqueID getUniqueID() const { ensureComplete(); return UID; }
+  uint32_t getUser() const { ensureComplete(); return User; }
+  uint32_t getGroup() const { ensureComplete(); return Group; }
+  uint64_t getSize() const { ensureComplete(); return Size; }
   /// @}
   /// @name Status queries
   /// These are static queries in llvm::sys::fs.

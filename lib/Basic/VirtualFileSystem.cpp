@@ -43,26 +43,50 @@ using llvm::sys::fs::perms;
 using llvm::sys::fs::UniqueID;
 
 Status::Status(const file_status &Status)
-    : UID(Status.getUniqueID()), MTime(Status.getLastModificationTime()),
-      User(Status.getUser()), Group(Status.getGroup()), Size(Status.getSize()),
-      Type(Status.type()), Perms(Status.permissions()), IsVFSMapped(false)  {}
+    : Type(Status.type()), UID(Status.getUniqueID()),
+      MTime(Status.getLastModificationTime()), User(Status.getUser()),
+      Group(Status.getGroup()), Size(Status.getSize()),
+      Perms(Status.permissions()), Incomplete(false),
+      IsVFSMapped(false)  {}
 
 Status::Status(StringRef Name, UniqueID UID, sys::TimePoint<> MTime,
                uint32_t User, uint32_t Group, uint64_t Size, file_type Type,
                perms Perms)
-    : Name(Name), UID(UID), MTime(MTime), User(User), Group(Group), Size(Size),
-      Type(Type), Perms(Perms), IsVFSMapped(false) {}
+    : Name(Name), Type(Type), UID(UID), MTime(MTime), User(User),
+      Group(Group), Size(Size), Perms(Perms),
+      Incomplete(false), IsVFSMapped(false) {}
+
+Status::Status(StringRef Name, llvm::sys::fs::file_type Type)
+  : Name(Name), Type(Type), Incomplete(true) {}
 
 Status Status::copyWithNewName(const Status &In, StringRef NewName) {
-  return Status(NewName, In.getUniqueID(), In.getLastModificationTime(),
-                In.getUser(), In.getGroup(), In.getSize(), In.getType(),
-                In.getPermissions());
+  if (In.Incomplete)
+    return Status(NewName, In.getType());
+  else
+    return Status(NewName, In.getUniqueID(), In.getLastModificationTime(),
+                  In.getUser(), In.getGroup(), In.getSize(), In.getType(),
+                  In.getPermissions());
 }
 
 Status Status::copyWithNewName(const file_status &In, StringRef NewName) {
   return Status(NewName, In.getUniqueID(), In.getLastModificationTime(),
                 In.getUser(), In.getGroup(), In.getSize(), In.type(),
                 In.permissions());
+}
+
+void Status::ensureComplete() const {
+  if (!Incomplete)
+    return;
+  sys::fs::file_status RealStatus;
+  if (std::error_code EC = sys::fs::status(Name, RealStatus))
+    return;
+  UID = RealStatus.getUniqueID();
+  MTime = RealStatus.getLastModificationTime();
+  User = RealStatus.getUser();
+  Group = RealStatus.getGroup();
+  Size = RealStatus.getSize();
+  Perms = RealStatus.permissions();
+  Incomplete = false;
 }
 
 bool Status::equivalent(const Status &Other) const {
@@ -255,9 +279,7 @@ public:
   RealFSDirIter(const Twine &_Path, std::error_code &EC)
       : Path(_Path.str()), Iter(Path, EC) {
     if (!EC && Iter != llvm::sys::fs::directory_iterator()) {
-      llvm::sys::fs::file_status S;
-      EC = Iter->status(S);
-      CurrentEntry = Status::copyWithNewName(S, Iter->path());
+      CurrentEntry = Status(Iter->path(), Iter->type());
     }
   }
 
@@ -269,9 +291,7 @@ public:
     } else if (Iter == llvm::sys::fs::directory_iterator()) {
       CurrentEntry = Status();
     } else {
-      llvm::sys::fs::file_status S;
-      EC = Iter->status(S);
-      CurrentEntry = Status::copyWithNewName(S, Iter->path());
+      CurrentEntry = Status(Iter->path(), Iter->type());
     }
     return EC;
   }

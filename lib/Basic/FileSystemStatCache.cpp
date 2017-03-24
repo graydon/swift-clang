@@ -109,6 +109,16 @@ bool FileSystemStatCache::get(StringRef Path, FileData &Data, bool isFile,
 MemorizeStatCalls::LookupResult
 MemorizeStatCalls::getStat(StringRef Path, FileData &Data, bool isFile,
                            std::unique_ptr<vfs::File> *F, vfs::FileSystem &FS) {
+
+  auto i = StatCalls.find(Path);
+  if (i != StatCalls.end()) {
+    if ((isFile && !i->second.IsDirectory) ||
+        (!isFile && i->second.IsDirectory)) {
+      Data = i->second;
+      return CacheExists;
+    }
+  }
+
   LookupResult Result = statChained(Path, Data, isFile, F, FS);
 
   // Do not cache failed stats, it is easy to construct common inconsistent
