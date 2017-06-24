@@ -125,6 +125,9 @@ namespace clang {
     void ReadObjCDefinitionData(struct ObjCInterfaceDecl::DefinitionData &Data);
     void MergeDefinitionData(ObjCInterfaceDecl *D,
                              struct ObjCInterfaceDecl::DefinitionData &&NewDD);
+    void ReadObjCDefinitionData(struct ObjCProtocolDecl::DefinitionData &Data);
+    void MergeDefinitionData(ObjCProtocolDecl *D,
+                             struct ObjCProtocolDecl::DefinitionData &&NewDD);
 
     static NamedDecl *getAnonymousDeclForMerging(ASTReader &Reader,
                                                  DeclContext *DC,
@@ -983,7 +986,23 @@ void ASTDeclReader::ReadObjCDefinitionData(
 
 void ASTDeclReader::MergeDefinitionData(ObjCInterfaceDecl *D,
          struct ObjCInterfaceDecl::DefinitionData &&NewDD) {
+  // For the time being we adopt a somewhat crude, silent form of
+  // deterministic merge of _just_ the Definition field, wherein the
+  // definition with the highest-numbered module ID wins.
+  //
+  // In particular this means that a modular definition will win over a
+  // non-modular definition, which is relevant for achieving stability when
+  // both definitions are present (eg. in a PCH and a PCM that include the
+  // same header) but which might be imported in different orders at
+  // different times, due to swift's preference for starting in one import
+  // table or the other.
+  //
   // FIXME: odr checking?
+  // FIXME: merge other fields aside from Definition?
+  if (D->data().Definition->getOwningModuleID() <
+      NewDD.Definition->getOwningModuleID()) {
+    D->data().Definition = NewDD.Definition;
+  }
 }
 
 void ASTDeclReader::VisitObjCInterfaceDecl(ObjCInterfaceDecl *ID) {
@@ -1032,18 +1051,8 @@ void ASTDeclReader::VisitObjCIvarDecl(ObjCIvarDecl *IVD) {
   IVD->setSynthesize(synth);
 }
 
-void ASTDeclReader::VisitObjCProtocolDecl(ObjCProtocolDecl *PD) {
-  RedeclarableResult Redecl = VisitRedeclarable(PD);
-  VisitObjCContainerDecl(PD);
-  mergeRedeclarable(PD, Redecl);
-
-  if (Record.readInt()) {
-    // Read the definition.
-    PD->allocateDefinitionData();
-
-    // Set the definition data of the canonical declaration, so other
-    // redeclarations will see it.
-    PD->getCanonicalDecl()->Data = PD->Data;
+void ASTDeclReader::ReadObjCDefinitionData(
+         struct ObjCProtocolDecl::DefinitionData &Data) {
 
     unsigned NumProtoRefs = Record.readInt();
     SmallVector<ObjCProtocolDecl *, 16> ProtoRefs;
@@ -1054,9 +1063,53 @@ void ASTDeclReader::VisitObjCProtocolDecl(ObjCProtocolDecl *PD) {
     ProtoLocs.reserve(NumProtoRefs);
     for (unsigned I = 0; I != NumProtoRefs; ++I)
       ProtoLocs.push_back(ReadSourceLocation());
-    PD->setProtocolList(ProtoRefs.data(), NumProtoRefs, ProtoLocs.data(),
-                        Reader.getContext());
+    Data.ReferencedProtocols.set(ProtoRefs.data(), NumProtoRefs,
+                                 ProtoLocs.data(), Reader.getContext());
+}
 
+void ASTDeclReader::MergeDefinitionData(ObjCProtocolDecl *D,
+         struct ObjCProtocolDecl::DefinitionData &&NewDD) {
+  // For the time being we adopt a somewhat crude, silent form of
+  // deterministic merge of _just_ the Definition field, wherein the
+  // definition with the highest-numbered module ID wins.
+  //
+  // In particular this means that a modular definition will win over a
+  // non-modular definition, which is relevant for achieving stability when
+  // both definitions are present (eg. in a PCH and a PCM that include the
+  // same header) but which might be imported in different orders at
+  // different times, due to swift's preference for starting in one import
+  // table or the other.
+  //
+  // FIXME: odr checking?
+  // FIXME: merge other fields aside from Definition?
+  if (D->data().Definition->getOwningModuleID() <
+      NewDD.Definition->getOwningModuleID()) {
+    D->data().Definition = NewDD.Definition;
+  }
+}
+
+void ASTDeclReader::VisitObjCProtocolDecl(ObjCProtocolDecl *PD) {
+  RedeclarableResult Redecl = VisitRedeclarable(PD);
+  VisitObjCContainerDecl(PD);
+  mergeRedeclarable(PD, Redecl);
+
+  if (Record.readInt()) {
+    // Read the definition.
+    PD->allocateDefinitionData();
+
+    ReadObjCDefinitionData(PD->data());
+
+    ObjCProtocolDecl *Canon = PD->getCanonicalDecl();
+    if (Canon->Data.getPointer()) {
+      // If we already have a definition, keep the definition invariant and
+      // merge the data.
+      MergeDefinitionData(Canon, std::move(PD->data()));
+      PD->Data = Canon->Data;
+    } else {
+      // Set the definition data of the canonical declaration, so other
+      // redeclarations will see it.
+      PD->getCanonicalDecl()->Data = PD->Data;
+    }
     // Note that we have deserialized a definition.
     Reader.PendingDefinitions.insert(PD);
   } else {
